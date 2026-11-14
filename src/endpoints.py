@@ -563,6 +563,32 @@ async def extract_simple(
         if media_format == "MOVIE":
             episode = 1
 
+    # explicit provider: ask ONLY that provider (no race, no pipe fallback)
+    if wanted:
+        res, why = await provider_race.watch_preferred(anilist_id, episode, audio, wanted)
+        if res:
+            from fastapi.encoders import jsonable_encoder
+            from fastapi.responses import JSONResponse
+            payload = proxy_deep_images({
+                "anilistId": anilist_id,
+                "episode": episode,
+                "type": audio,
+                "provider": wanted,
+                "defaultProvider": provider_race.default_provider(),
+                "requestedProvider": wanted,
+                "streams": res,
+                "subtitles": provider_race.merge_subtitles(res),
+            })
+            return JSONResponse(
+                content=jsonable_encoder(payload),
+                headers={"Cache-Control": "public, s-maxage=180"},
+            )
+        if why == "timeout":
+            raise HTTPException(status_code=504, detail=f"{wanted} timed out for episode {episode} ({audio})")
+        if why == "error":
+            raise HTTPException(status_code=502, detail=f"{wanted} request failed for episode {episode} ({audio})")
+        raise HTTPException(status_code=404, detail=f"{wanted} has no {audio} streams for episode {episode}")
+        
     try:
         raced = await provider_race.race_watch(anilist_id, episode, audio, preferred=wanted)
         if raced:
