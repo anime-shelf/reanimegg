@@ -180,3 +180,46 @@ def providers_status() -> dict:
         "available": [name for name, _ in providers()],
         "latency": latency_table(),
     }
+
+PREFERRED_TIMEOUT = 20.0
+
+
+async def watch_preferred(anilist_id: int, ep: int, audio: str, name: str):
+    """Ask ONE provider only. Returns (streams or None, why).
+    why: "ok" | "empty" (provider has nothing) | "timeout" | "error" (temporary)."""
+    import httpx
+
+    mod = _load(name)
+    if mod is None:
+        return None, "error"
+    key = (name, anilist_id, ep, audio)
+    hit = _watch_cache.get(key)
+    if hit and hit[0] > time.time():
+        return hit[1], "ok"
+    t0 = time.time()
+    try:
+        ctx = await build_ctx(anilist_id)
+    except Exception as e:
+        print(f"[RACE] {name} identity failed: {str(e)[:120]}")
+        return None, "error"
+    try:
+        streams = await asyncio.wait_for(
+            mod.watch(anilist_id, audio, ep, ctx), PREFERRED_TIMEOUT)
+    except asyncio.TimeoutError:
+        record_latency(name, round(time.time() - t0, 3), False)
+        return None, "timeout"
+    except Exception as e:
+        record_latency(name, round(time.time() - t0, 3), False)
+        print(f"[RACE] {name} preferred failed: {str(e)[:120]}")
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (404, 410):
+            return None, "empty"
+        if isinstance(e, httpx.HTTPError):
+            return None, "error"
+        return None, "empty"
+    dt = round(time.time() - t0, 3)
+    if streams:
+        _watch_cache[key] = (time.time() + WATCH_CACHE_TTL, streams)
+        record_latency(name, dt, True)
+        return streams, "ok"
+    record_latency(name, dt, False)
+    return None, "empty"
