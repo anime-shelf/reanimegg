@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json as _json
 import re
+import time
 from urllib.parse import quote, unquote, urlparse
 
 from src.providers import _cache
@@ -34,6 +35,10 @@ async def search(query: str) -> list:
 
 
 async def scrape_series(slug: str) -> list:
+    ckey = f"np:{NAME}:series:{slug}"
+    cached_eps = _cache.cached(ckey, 300)
+    if cached_eps is not None:
+        return cached_eps
     html = await fetch_text(f"{BASE}/series/{slug}")
     episodes = []
     for m in re.finditer(r"<li\b[^>]*>([\s\S]*?)</li>", html, re.IGNORECASE):
@@ -74,11 +79,12 @@ async def scrape_series(slug: str) -> list:
         if e["number"] not in seen:
             seen.add(e["number"])
             out.append(e)
+    if out:
+        _cache.set(ckey, out, 300)   # 5 min: new episodes still show up quickly
     return out
 
-
 async def scrape_embed(embed_id: str) -> list:
-    html = await fetch_text(f"{BASE}/embed/{embed_id}", {"Referer": BASE})
+    html = await fetch_text(f"{BASE}/embed/{embed_id}", {"Referer": BASE}, timeout=8.0)
     m = re.search(r"var\s+videoSources\s*=\s*(\[[\s\S]*?\]);", html)
     if not m:
         return []
@@ -163,15 +169,34 @@ async def scrape_episode_watch(ep_slug: str, audio: str) -> dict:
         })
         return streams
 
-    results = await asyncio.gather(*[_resolve(t, i) for i, t in enumerate(tabs)],
-                                   return_exceptions=True)
+    # Start every mirror at once, but do not let one slow mirror hold the answer:
+    # once a mirror has produced a playable file, the others get 1.5s more, then are dropped.
+    tasks = {asyncio.ensure_future(_resolve(t, i)): i for i, t in enumerate(tabs)}
+    by_index = {}
+    pending = set(tasks)
+    deadline = None
+    try:
+        while pending:
+            left = None if deadline is None else max(0.0, deadline - time.monotonic())
+            done, pending = await asyncio.wait(
+                pending, timeout=left, return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                break
+            for task in done:
+                try:
+                    r = task.result()
+                except Exception:
+                    continue
+                by_index[tasks[task]] = r
+                if deadline is None and any(s.get("type") != "embed" for s in r):
+                    deadline = time.monotonic() + 1.5
+    finally:
+        for task in pending:
+            task.cancel()
     streams = []
-    for r in results:
-        if isinstance(r, Exception):
-            continue
-        streams.extend(r)
+    for i in sorted(by_index):
+        streams.extend(by_index[i])
     return {"title": title, "streams": streams}
-
 
 async def search_fn(query: str) -> list:
     r1 = await search(query)
