@@ -26,7 +26,7 @@ _STATUS = {
 
 async def _fetch_arm(anilist_id: int):
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with httpx.AsyncClient(timeout=5.0) as client:
             res = await client.get(
                 f"{ARM}?source=anilist&id={anilist_id}",
                 headers={"User-Agent": UA, "Accept": "application/json"},
@@ -40,16 +40,16 @@ async def _fetch_arm(anilist_id: int):
 
 async def _fetch_anilist(anilist_id: int):
     try:
-        data = await anilist_query(MEDIA_QUERY, {"id": int(anilist_id)})
+        # bounded: a slow AniList must not hold up the whole play request (Kitsu is the fallback below)
+        data = await asyncio.wait_for(anilist_query(MEDIA_QUERY, {"id": int(anilist_id)}), 4.0)
         return (data or {}).get("Media")
     except Exception:
         return None
 
-
 async def _fetch_kitsu(anilist_id: int, arm: dict | None = None):
     try:
         mal = (arm or {}).get("myanimelist")
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with httpx.AsyncClient(timeout=6.0) as client:
             if mal:
                 res = await client.get(
                     f"{KITSU}/mappings",
@@ -197,21 +197,36 @@ async def get_media(anilist_id: int) -> dict:
 
 
 async def get_anizip(anilist_id: int):
+    key = f"np-anizip:{anilist_id}"
+    hit = _cache.cached(key, 3600)
+    if hit is not None:
+        return hit
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with httpx.AsyncClient(timeout=6.0) as client:
             res = await client.get(
                 f"{ANIZIP}?anilist_id={anilist_id}",
                 headers={"User-Agent": UA, "Accept": "application/json"},
             )
         if res.status_code != 200:
             return None
-        return res.json()
+        data = res.json()
+        if data:
+            _cache.set(key, data, 3600)
+        return data
     except Exception:
         return None
 
 
 async def build_ctx(anilist_id: int, media: dict | None = None) -> dict:
-    media = media or await get_media(anilist_id)
+    if media is None:
+        # identity and ani.zip do not depend on each other: ask both at once
+        media, anizip = await asyncio.gather(
+            get_media(anilist_id), get_anizip(anilist_id), return_exceptions=True)
+        if isinstance(media, Exception):
+            raise media
+        if isinstance(anizip, Exception):
+            anizip = None
+        return {"media": media, "anizip": anizip}
     try:
         anizip = await get_anizip(anilist_id)
     except Exception:
