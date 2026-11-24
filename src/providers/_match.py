@@ -138,11 +138,8 @@ async def get_prequel_offset(anilist_id: int) -> int:
     if hit is not None:
         return hit
     gql = "query($id:Int){Media(id:$id,type:ANIME){relations{%s}}}" % RELATION_FRAGMENT
-    try:
-        data = await anilist_query(gql, {"id": int(anilist_id)})
-        offset = _prequel_offset((data.get("Media") or {}).get("relations"))
-    except Exception:
-        offset = 0
+    data = await anilist_query(gql, {"id": int(anilist_id)})   # failure propagates: never cached as 0
+    offset = _prequel_offset((data.get("Media") or {}).get("relations"))
     _cache.set(key, offset, _cache.SHOW_IDENTITY_TTL)
     return offset
 
