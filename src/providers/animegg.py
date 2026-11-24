@@ -203,7 +203,7 @@ async def search_fn(query: str) -> list:
 
     first = (query.split() or [""])[0]
     compact = re.sub(r"[^a-zA-Z0-9]", "", first)
-    if len(compact) >= 4 and compact.lower() != query.lower():
+    if not r1 and len(compact) >= 4 and compact.lower() != query.lower():
         try:
             r2 = await search(compact)
             seen = {r["slug"] for r in r1}
@@ -223,12 +223,17 @@ async def resolve_series(anilist_id: int, ctx: dict | None = None) -> dict:
         return hit
     media = ctx["media"]
     titles = build_titles(media, ctx.get("anizip"))
-    candidates = await find_top_slugs(titles, search_fn)
     expected = expected_count(media, ctx.get("anizip"))
-    try:
-        offset = await get_prequel_offset(anilist_id)
-    except Exception:
-        offset = 0
+
+    async def _offset():
+        # AniList is the weakest link: bounded to 3s and run at the same time as the search
+        try:
+            return await asyncio.wait_for(get_prequel_offset(anilist_id), 3.0), True
+        except Exception:
+            return 0, False
+
+    candidates, (offset, offset_ok) = await asyncio.gather(
+        find_top_slugs(titles, search_fn), _offset())
     is_single_movie = str((media or {}).get("format") or "").upper() == "MOVIE" or expected == 1
     selected = await select_series(candidates, scrape_series, expected,
                                    media.get("status"), offset,
@@ -237,7 +242,8 @@ async def resolve_series(anilist_id: int, ctx: dict | None = None) -> dict:
         raise RuntimeError(f"AnimeGG match not found for AniList {anilist_id}")
     data = {"slug": selected["slug"], "title": selected["title"],
             "mode": selected["mode"], "offset": offset, "score": selected["score"]}
-    _cache.set(key, data, _cache.SHOW_IDENTITY_TTL)
+    # offset unknown (AniList down) -> remember only briefly so the real offset is fetched next time
+    _cache.set(key, data, _cache.SHOW_IDENTITY_TTL if offset_ok else 120)
     return data
 
 
