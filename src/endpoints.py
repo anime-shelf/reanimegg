@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query, HTTPException
-from typing import Optional
+from typing import Optional, List
 import httpx
 import base64
 
@@ -475,9 +475,7 @@ async def get_genres():
     """
     data = await anilist_query(gql)
     return {"genres": data.get("GenreCollection", [])}
-
-
-@router.get("/sources")
+    @router.get("/sources")
 async def get_sources(
     episodeId: str = Query(..., description="episode tracking string"),
     provider: str = Query(..., description="video provider host"),
@@ -521,12 +519,12 @@ async def extract_simple(
     episode: int = Query(1, alias="e"),
     audio: str = Query("sub", alias="type", description="sub or dub"),
     provider: str | None = Query(None, alias="provider", description="prefer one provider"),
-    t: list[str] | None = Query(None, description="titles the app already knows (english, romaji, synonyms)"),
-    mal: int | None = Query(None),
-    y: int | None = Query(None, description="season year"),
-    n: int | None = Query(None, description="episode count"),
-    f: str | None = Query(None, description="format, e.g. TV / MOVIE"),
-    st: str | None = Query(None, description="status, e.g. FINISHED"),
+    t: Optional[List[str]] = Query(None, description="titles the app already knows (english, romaji, synonyms)"),
+    mal: Optional[int] = Query(None),
+    y: Optional[int] = Query(None, description="season year"),
+    n: Optional[int] = Query(None, description="episode count"),
+    f: Optional[str] = Query(None, description="format, e.g. TV / MOVIE"),
+    st: Optional[str] = Query(None, description="status, e.g. FINISHED"),
 ):
     hint = {"titles": t, "mal": mal, "year": y, "episodes": n, "format": f, "status": st} if t else None
 
@@ -594,7 +592,7 @@ async def extract_simple(
                 content=jsonable_encoder(payload),
                 headers={"Cache-Control": "public, s-maxage=180"},
             )
-                if why == "timeout":
+        if why == "timeout":
             raise HTTPException(status_code=504, detail=f"{wanted} timed out for episode {episode} ({audio})")
         if why == "error":
             raise HTTPException(status_code=502, detail=f"{wanted} request failed for episode {episode} ({audio})")
@@ -710,4 +708,3 @@ async def extract_simple(
             detail=f"no dub streams found for episode {episode}; try type=sub",
         )
     raise HTTPException(status_code=500, detail=f"all providers failed. last error: {last_error}")
-  
