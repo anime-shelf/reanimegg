@@ -232,25 +232,3 @@ async def build_ctx(anilist_id: int, media: dict | None = None) -> dict:
     except Exception:
         anizip = None
     return {"media": media, "anizip": anizip}
-
-
-def hint_ctx(anilist_id: int, hint: dict) -> dict:
-    """Context from data the app sent (titles, year, MAL id, episode count). No AniList / ARM / ani.zip call."""
-    titles = [t for t in (hint.get("titles") or []) if t]
-    media = {
-        "id": int(anilist_id),
-        "idMal": hint.get("mal"),
-        "title": {"english": titles[0] if titles else None,
-                  "romaji": titles[1] if len(titles) > 1 else None,
-                  "native": None},
-        "status": hint.get("status") or "RELEASING",
-        "format": hint.get("format"),
-        "episodes": hint.get("episodes"),
-        "seasonYear": hint.get("year"),
-        "startDate": None,
-        "nextAiringEpisode": None,
-        "synonyms": titles[2:],
-        "arm": {},
-        "_source": "app-hint",
-    }
-    return {"media": media, "anizip": None}
