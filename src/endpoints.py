@@ -341,7 +341,8 @@ async def get_anime_characters(
         "characters": chars.get("edges", []),
     }
     return proxy_deep_images(response)
-    @router.get("/anime/{anilist_id}/relations")
+    
+@router.get("/anime/{anilist_id}/relations")
 async def get_anime_relations(anilist_id: int):
 
     gql = """
