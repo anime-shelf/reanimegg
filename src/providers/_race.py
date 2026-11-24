@@ -2,7 +2,7 @@ import asyncio
 import importlib
 import time
 
-from src.providers._media import build_ctx, hint_ctx
+from src.providers._media import build_ctx
 
 RANKING = [
     "anineko", "anizone", "anikoto", "reanime", "aniwaves",
@@ -184,7 +184,7 @@ def providers_status() -> dict:
 PREFERRED_TIMEOUT = 20.0
 
 
-async def watch_preferred(anilist_id: int, ep: int, audio: str, name: str, hint: dict | None = None):
+async def watch_preferred(anilist_id: int, ep: int, audio: str, name: str):
     """Ask ONE provider only. Returns (streams or None, why).
     why: "ok" | "empty" (provider has nothing) | "timeout" | "error" (temporary)."""
     import httpx
@@ -198,10 +198,7 @@ async def watch_preferred(anilist_id: int, ep: int, audio: str, name: str, hint:
         return hit[1], "ok"
     t0 = time.time()
     try:
-        try:
-            ctx = hint_ctx(anilist_id, hint) if hint else await build_ctx(anilist_id)
-        except Exception:
-            ctx = await build_ctx(anilist_id)
+        ctx = await build_ctx(anilist_id)
     except Exception as e:
         print(f"[RACE] {name} identity failed: {str(e)[:120]}")
         return None, "error"
