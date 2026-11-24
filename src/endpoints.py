@@ -475,10 +475,10 @@ async def get_genres():
     """
     data = await anilist_query(gql)
     return {"genres": data.get("GenreCollection", [])}
-    @router.get("/sources")
 
-    
-async def get_sources(
+
+    @router.get("/sources")
+    async def get_sources(
     episodeId: str = Query(..., description="episode tracking string"),
     provider: str = Query(..., description="video provider host"),
     anilistId: int = Query(..., description="anime db identification code"),
