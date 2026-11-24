@@ -198,7 +198,10 @@ async def watch_preferred(anilist_id: int, ep: int, audio: str, name: str, hint:
         return hit[1], "ok"
     t0 = time.time()
     try:
-        ctx = hint_ctx(anilist_id, hint) if hint else await build_ctx(anilist_id)
+        try:
+            ctx = hint_ctx(anilist_id, hint) if hint else await build_ctx(anilist_id)
+        except Exception:
+            ctx = await build_ctx(anilist_id)
     except Exception as e:
         print(f"[RACE] {name} identity failed: {str(e)[:120]}")
         return None, "error"
