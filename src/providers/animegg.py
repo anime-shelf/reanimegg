@@ -18,7 +18,7 @@ BASE = "https://www.animegg.org"
 
 
 async def search(query: str) -> list:
-    html = await fetch_text(f"{BASE}/search/?q={quote(query)}", timeout=8.0)
+    html = await fetch_text(f"{BASE}/search/?q={quote(query)}")
     results = []
     for m in re.finditer(
             r"<a\b[^>]*class=[\"'][^\"']*\bmse\b[^\"']*[\"'][^>]*>[\s\S]*?</a>",
@@ -39,7 +39,7 @@ async def scrape_series(slug: str) -> list:
     cached_eps = _cache.cached(ckey, 300)
     if cached_eps is not None:
         return cached_eps
-    html = await fetch_text(f"{BASE}/series/{slug}", timeout=8.0)
+    html = await fetch_text(f"{BASE}/series/{slug}")
     episodes = []
     for m in re.finditer(r"<li\b[^>]*>([\s\S]*?)</li>", html, re.IGNORECASE):
         block = m.group(1)
@@ -117,7 +117,7 @@ async def scrape_embed(embed_id: str) -> list:
 
 
 async def scrape_episode_watch(ep_slug: str, audio: str) -> dict:
-    html = await fetch_text(f"{BASE}/{ep_slug}", {"Referer": BASE}, timeout=8.0)
+    html = await fetch_text(f"{BASE}/{ep_slug}", {"Referer": BASE})
     title_m = re.search(
         r"<div\b[^>]*class=[\"'][^\"']*info[^\"']*[\"'][^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)</a>",
         html, re.IGNORECASE)
@@ -203,7 +203,7 @@ async def search_fn(query: str) -> list:
 
     first = (query.split() or [""])[0]
     compact = re.sub(r"[^a-zA-Z0-9]", "", first)
-    if not r1 and len(compact) >= 4 and compact.lower() != query.lower():
+    if len(compact) >= 4 and compact.lower() != query.lower():
         try:
             r2 = await search(compact)
             seen = {r["slug"] for r in r1}
@@ -223,18 +223,12 @@ async def resolve_series(anilist_id: int, ctx: dict | None = None) -> dict:
         return hit
     media = ctx["media"]
     titles = build_titles(media, ctx.get("anizip"))
+    candidates = await find_top_slugs(titles, search_fn)
     expected = expected_count(media, ctx.get("anizip"))
-
-    async def _offset():
-        # AniList is the weakest link: bounded to 3s and run at the same time as the search
-        try:
-            return await asyncio.wait_for(get_prequel_offset(anilist_id), 3.0), True
-        except Exception:
-            return 0, False
-
-    candidates, (offset, offset_ok) = await asyncio.gather(
-        find_top_slugs(titles, search_fn), _offset())
-    candidates = candidates[:3]          # was 6 full series pages; the best 3 are enough
+    try:
+        offset = await get_prequel_offset(anilist_id)
+    except Exception:
+        offset = 0
     is_single_movie = str((media or {}).get("format") or "").upper() == "MOVIE" or expected == 1
     selected = await select_series(candidates, scrape_series, expected,
                                    media.get("status"), offset,
@@ -243,8 +237,7 @@ async def resolve_series(anilist_id: int, ctx: dict | None = None) -> dict:
         raise RuntimeError(f"AnimeGG match not found for AniList {anilist_id}")
     data = {"slug": selected["slug"], "title": selected["title"],
             "mode": selected["mode"], "offset": offset, "score": selected["score"]}
-    # offset unknown (AniList down) -> remember only briefly so the real offset is fetched next time
-    _cache.set(key, data, _cache.SHOW_IDENTITY_TTL if offset_ok else 120)
+    _cache.set(key, data, _cache.SHOW_IDENTITY_TTL)
     return data
 
 
