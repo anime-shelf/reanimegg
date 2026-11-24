@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query, HTTPException
-from typing import Optional, List
+from typing import Optional
 import httpx
 import base64
 
@@ -519,14 +519,7 @@ async def extract_simple(
     episode: int = Query(1, alias="e"),
     audio: str = Query("sub", alias="type", description="sub or dub"),
     provider: str | None = Query(None, alias="provider", description="prefer one provider"),
-    t: Optional[List[str]] = Query(None, description="titles the app already knows (english, romaji, synonyms)"),
-    mal: Optional[int] = Query(None),
-    y: Optional[int] = Query(None, description="season year"),
-    n: Optional[int] = Query(None, description="episode count"),
-    f: Optional[str] = Query(None, description="format, e.g. TV / MOVIE"),
-    st: Optional[str] = Query(None, description="status, e.g. FINISHED"),
 ):
-    hint = {"titles": t, "mal": mal, "year": y, "episodes": n, "format": f, "status": st} if t else None
 
     audio = (audio or "sub").lower()
     if audio not in ("sub", "dub"):
@@ -535,11 +528,7 @@ async def extract_simple(
     if wanted and wanted not in provider_race.RANKING:
         raise HTTPException(status_code=422, detail=f"unknown provider '{provider}'. valid: {', '.join(provider_race.RANKING)}")
 
-    if query.isdigit() and hint:
-        anilist_id = int(query)          # the app sent the titles: no AniList lookup at all
-        if str(f or "").upper() == "MOVIE":
-            episode = 1
-    elif query.isdigit():
+    if query.isdigit():
         anilist_id = int(query)
         # Soft identity: do not hard-fail if AniList is down
         try:
@@ -574,7 +563,7 @@ async def extract_simple(
 
     # explicit provider: ask ONLY that provider (no race, no pipe fallback)
     if wanted:
-        res, why = await provider_race.watch_preferred(anilist_id, episode, audio, wanted, hint=hint)
+        res, why = await provider_race.watch_preferred(anilist_id, episode, audio, wanted)
         if res:
             from fastapi.encoders import jsonable_encoder
             from fastapi.responses import JSONResponse
