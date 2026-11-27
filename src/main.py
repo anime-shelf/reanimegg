@@ -95,6 +95,33 @@ def _prefer_audio(lines: list[str], pattern: str) -> list[str]:
     return out
 
 
+def _up_headers(referer: str) -> dict:
+    """Headers that look like flixcloud's own embed player requesting its HLS."""
+    from urllib.parse import urlparse
+    h = dict(HEADERS)
+    p = urlparse(referer or "")
+    origin = f"{p.scheme}://{p.netloc}" if p.netloc else "https://flixcloud.cc"
+    h["Referer"] = referer or (origin + "/")
+    h["Origin"] = origin
+    h["User-Agent"] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+    h["Accept"] = "*/*"
+    h["Accept-Language"] = "en-US,en;q=0.9"
+    h["Sec-Fetch-Dest"] = "empty"
+    h["Sec-Fetch-Mode"] = "cors"
+    h["Sec-Fetch-Site"] = "same-site"
+    return h
+
+
+def _upstream_err(resp) -> Response:
+    import json as _json
+    snippet = (resp.text or "")[:200]
+    return Response(content=_json.dumps({"detail": f"upstream status {resp.status_code}",
+                                         "server": resp.headers.get("server", ""),
+                                         "body": snippet}),
+                    status_code=resp.status_code, media_type="application/json")
+
+
 @app.get("/proxy_m3u8")
 async def proxy_m3u8(url: str, referer: str, audio: str = ""):
     url = _norm_url(url)
@@ -102,16 +129,14 @@ async def proxy_m3u8(url: str, referer: str, audio: str = ""):
         return Response(content='{"detail":"bad proxy url"}', status_code=400,
                         media_type="application/json")
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        h = HEADERS.copy()
-        h["Referer"] = referer
+        h = _up_headers(referer)
         try:
             resp = await client.get(url, headers=h)
         except httpx.HTTPError as e:
             return Response(content='{"detail":"upstream fetch failed: %s"}' % type(e).__name__,
                             status_code=502, media_type="application/json")
     if resp.status_code >= 400:
-        return Response(content='{"detail":"upstream status %d"}' % resp.status_code,
-                        status_code=resp.status_code, media_type="application/json")
+        return _upstream_err(resp)
 
     base = str(resp.url)
     lines, variant_next = [], False
@@ -145,16 +170,14 @@ async def proxy_segment(url: str, referer: str):
         return Response(content='{"detail":"bad proxy url"}', status_code=400,
                         media_type="application/json")
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        h = HEADERS.copy()
-        h["Referer"] = referer
+        h = _up_headers(referer)
         try:
             resp = await client.get(url, headers=h)
         except httpx.HTTPError as e:
             return Response(content='{"detail":"upstream fetch failed: %s"}' % type(e).__name__,
                             status_code=502, media_type="application/json")
     if resp.status_code >= 400:
-        return Response(content='{"detail":"upstream status %d"}' % resp.status_code,
-                        status_code=resp.status_code, media_type="application/json")
+        return _upstream_err(resp)
     ct = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
     if not (ct.startswith(("audio/", "video/")) or ct in ("text/vtt", "application/octet-stream")):
         ct = "video/mp2t"
