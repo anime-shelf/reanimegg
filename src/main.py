@@ -163,6 +163,25 @@ async def proxy_m3u8(url: str, referer: str, audio: str = ""):
                     headers={"Cache-Control": "no-store"})
 
 
+@app.get("/debug_fetch")
+async def debug_fetch(url: str, referer: str = "https://flixcloud.cc/"):
+    """Debug helper: download a flixcloud page as a text file (flixcloud hosts only)."""
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    if not (host == "flixcloud.cc" or host.endswith(".flixcloud.cc")):
+        return Response(content='{"detail":"flixcloud hosts only"}', status_code=400,
+                        media_type="application/json")
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        try:
+            resp = await client.get(url, headers=_up_headers(referer))
+        except httpx.HTTPError as e:
+            return Response(content='{"detail":"fetch failed: %s"}' % type(e).__name__,
+                            status_code=502, media_type="application/json")
+    return Response(content=resp.text, media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="embed.txt"',
+                             "X-Upstream-Status": str(resp.status_code)})
+
+
 @app.get("/proxy_segment")
 async def proxy_segment(url: str, referer: str):
     url = _norm_url(url)
@@ -182,9 +201,7 @@ async def proxy_segment(url: str, referer: str):
     if not (ct.startswith(("audio/", "video/")) or ct in ("text/vtt", "application/octet-stream")):
         ct = "video/mp2t"
     return Response(content=resp.content, media_type=ct)
-
-
-@app.get("/", response_class=HTMLResponse)
+    @app.get("/", response_class=HTMLResponse)
 async def home():
 
     return """<!DOCTYPE html>
@@ -353,7 +370,8 @@ async def home():
             <div class="loading">working...</div>
             <div class="res-box"><pre></pre></div>
         </div>
-                <div class="card">
+
+        <div class="card">
             <div class="meta">
                 <div><span class="method">GET</span> <span class="path">spotlight</span> <span class="tag">hot</span></div>
             </div>
@@ -651,3 +669,4 @@ async def home():
     </script>
 </body>
 </html>"""
+           
