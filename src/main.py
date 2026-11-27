@@ -201,7 +201,8 @@ async def proxy_segment(url: str, referer: str):
     if not (ct.startswith(("audio/", "video/")) or ct in ("text/vtt", "application/octet-stream")):
         ct = "video/mp2t"
     return Response(content=resp.content, media_type=ct)
-    @app.get("/", response_class=HTMLResponse)
+    
+@app.get("/", response_class=HTMLResponse)
 async def home():
 
     return """<!DOCTYPE html>
