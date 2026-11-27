@@ -35,31 +35,107 @@ def _norm_url(url: str) -> str | None:
     return None
 
 
+import re as _re
+from urllib.parse import quote as _quote, urljoin as _urljoin
+
+
+def _purl(kind: str, absolute_url: str, referer: str) -> str:
+    return f"/{kind}?url={_quote(absolute_url, safe='')}&referer={_quote(referer, safe='')}"
+
+
+def _is_playlist_url(u: str) -> bool:
+    return ".m3u8" in u.split("#")[0].lower()
+
+
+def _rewrite_tag_uris(line: str, base: str, referer: str) -> str:
+    """Proxy every URI="..." inside an HLS tag (audio tracks, keys, init segments, subtitles)."""
+    tag = line.split(":", 1)[0]
+
+    def sub(m):
+        raw = m.group(1)
+        if raw.startswith("data:"):
+            return m.group(0)
+        absu = _urljoin(base, raw)
+        playlist = (tag in ("#EXT-X-MEDIA", "#EXT-X-I-FRAME-STREAM-INF")
+                    and _is_playlist_url(absu))
+        return 'URI="' + _purl("proxy_m3u8" if playlist else "proxy_segment", absu, referer) + '"'
+
+    return _re.sub(r'URI="([^"]+)"', sub, line)
+
+
+def _prefer_audio(lines: list[str], pattern: str) -> list[str]:
+    """If an audio rendition matches `pattern` (e.g. 'eng'), make it the DEFAULT one."""
+    try:
+        rx = _re.compile(pattern, _re.I)
+    except _re.error:
+        return lines
+
+    def is_audio(l):
+        return l.startswith("#EXT-X-MEDIA") and "TYPE=AUDIO" in l.upper()
+
+    def matches(l):
+        found = _re.findall(r'(?:LANGUAGE|NAME)="([^"]*)"', l, _re.I)
+        return any(rx.search(f) for f in found)
+
+    audio = [l for l in lines if is_audio(l)]
+    if not any(matches(l) for l in audio):
+        return lines
+    out, done = [], False
+    for l in lines:
+        if is_audio(l):
+            hit = matches(l) and not done
+            if hit:
+                done = True
+            l = _re.sub(r"DEFAULT=(YES|NO)", "DEFAULT=" + ("YES" if hit else "NO"), l)
+            if "DEFAULT=" not in l:
+                l += ",DEFAULT=" + ("YES" if hit else "NO")
+            if hit and "AUTOSELECT=" not in l.upper():
+                l += ",AUTOSELECT=YES"
+        out.append(l)
+    return out
+
+
 @app.get("/proxy_m3u8")
-async def proxy_m3u8(url: str, referer: str):
+async def proxy_m3u8(url: str, referer: str, audio: str = ""):
     url = _norm_url(url)
     if not url:
         return Response(content='{"detail":"bad proxy url"}', status_code=400,
                         media_type="application/json")
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         h = HEADERS.copy()
         h["Referer"] = referer
-        resp = await client.get(url, headers=h)
+        try:
+            resp = await client.get(url, headers=h)
+        except httpx.HTTPError as e:
+            return Response(content='{"detail":"upstream fetch failed: %s"}' % type(e).__name__,
+                            status_code=502, media_type="application/json")
+    if resp.status_code >= 400:
+        return Response(content='{"detail":"upstream status %d"}' % resp.status_code,
+                        status_code=resp.status_code, media_type="application/json")
 
-        content = resp.text
-        lines = []
-        from urllib.parse import quote, urljoin
-        for line in content.split('\n'):
-            stripped = line.strip()
-            if stripped and not stripped.startswith('#'):
-                absolute_url = urljoin(url, stripped)
-                if '.m3u8' in stripped:
-                    line = f"/proxy_m3u8?url={quote(absolute_url, safe='')}&referer={quote(referer, safe='')}"
-                else:
-                    line = f"/proxy_segment?url={quote(absolute_url, safe='')}&referer={quote(referer, safe='')}"
+    base = str(resp.url)
+    lines, variant_next = [], False
+    for raw in resp.text.replace("\r", "").split("\n"):
+        line = raw.strip()
+        if not line:
+            lines.append(raw)
+            continue
+        if line.startswith("#"):
+            variant_next = variant_next or line.startswith("#EXT-X-STREAM-INF")
+            if 'URI="' in line:
+                line = _rewrite_tag_uris(line, base, referer)
             lines.append(line)
+            continue
+        absu = _urljoin(base, line)
+        kind = "proxy_m3u8" if (variant_next or _is_playlist_url(absu)) else "proxy_segment"
+        variant_next = False
+        lines.append(_purl(kind, absu, referer))
 
-        return Response(content='\n'.join(lines), media_type="application/vnd.apple.mpegurl")
+    if audio:
+        lines = _prefer_audio(lines, audio)
+
+    return Response(content="\n".join(lines), media_type="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.get("/proxy_segment")
@@ -68,11 +144,21 @@ async def proxy_segment(url: str, referer: str):
     if not url:
         return Response(content='{"detail":"bad proxy url"}', status_code=400,
                         media_type="application/json")
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         h = HEADERS.copy()
         h["Referer"] = referer
-        resp = await client.get(url, headers=h)
-        return Response(content=resp.content, media_type="video/mp2t")
+        try:
+            resp = await client.get(url, headers=h)
+        except httpx.HTTPError as e:
+            return Response(content='{"detail":"upstream fetch failed: %s"}' % type(e).__name__,
+                            status_code=502, media_type="application/json")
+    if resp.status_code >= 400:
+        return Response(content='{"detail":"upstream status %d"}' % resp.status_code,
+                        status_code=resp.status_code, media_type="application/json")
+    ct = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if not (ct.startswith(("audio/", "video/")) or ct in ("text/vtt", "application/octet-stream")):
+        ct = "video/mp2t"
+    return Response(content=resp.content, media_type=ct)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -244,8 +330,7 @@ async def home():
             <div class="loading">working...</div>
             <div class="res-box"><pre></pre></div>
         </div>
-
-        <div class="card">
+                <div class="card">
             <div class="meta">
                 <div><span class="method">GET</span> <span class="path">spotlight</span> <span class="tag">hot</span></div>
             </div>
